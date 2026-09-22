@@ -13,15 +13,8 @@ type RouteCandidate = {
   destination: string;
   hub?: string;
   miles: number;
-  taxes: {
-    known: boolean;
-    amount: number | null;
-    currency: string | null;
-  };
-  seats: {
-    remaining: number | null;
-    reliable: boolean;
-  };
+  taxes: { known: boolean; amount: number | null; currency: string | null };
+  seats: { remaining: number | null; reliable: boolean };
   flights: Array<{
     flightNumbers: string;
     carriers: string;
@@ -61,7 +54,14 @@ const PROGRAM_NAMES: Record<string, string> = {
 };
 
 const TAXES_UNAVAILABLE = new Set(["qatar", "turkish", "singapore"]);
-const SEAT_COUNT_UNRELIABLE = new Set(["qatar", "american", "emirates", "qantas", "turkish", "singapore"]);
+const SEAT_COUNT_UNRELIABLE = new Set([
+  "qatar",
+  "american",
+  "emirates",
+  "qantas",
+  "turkish",
+  "singapore",
+]);
 
 const CABIN_PREFIX: Record<Cabin, "Y" | "W" | "J" | "F"> = {
   economy: "Y",
@@ -101,18 +101,36 @@ function sourceOf(a: AnyObject) {
   return String(a?.Source ?? a?.Route?.Source ?? "").toLowerCase();
 }
 
-function bestBySource(items: AnyObject[], cabin: Cabin) {
-  const map = new Map<string, AnyObject>();
+function groupBySource(items: AnyObject[], cabin: Cabin) {
+  const map = new Map<string, AnyObject[]>();
   for (const item of items) {
     if (!availabilityAvailable(item, cabin)) continue;
     const source = sourceOf(item);
     if (!source) continue;
-    const existing = map.get(source);
-    if (!existing || availabilityMiles(item, cabin) < availabilityMiles(existing, cabin)) {
-      map.set(source, item);
-    }
+    const arr = map.get(source) ?? [];
+    arr.push(item);
+    map.set(source, arr);
+  }
+  for (const arr of map.values()) {
+    arr.sort(
+      (a, b) =>
+        String(a.Date).localeCompare(String(b.Date)) ||
+        availabilityMiles(a, cabin) - availabilityMiles(b, cabin)
+    );
   }
   return map;
+}
+
+function bestBySource(items: AnyObject[], cabin: Cabin) {
+  const grouped = groupBySource(items, cabin);
+  const best = new Map<string, AnyObject>();
+  for (const [source, arr] of grouped) {
+    const cheapest = [...arr].sort(
+      (a, b) => availabilityMiles(a, cabin) - availabilityMiles(b, cabin)
+    )[0];
+    if (cheapest) best.set(source, cheapest);
+  }
+  return best;
 }
 
 function tripList(value: unknown, cabin: Cabin): AnyObject[] {
@@ -122,9 +140,9 @@ function tripList(value: unknown, cabin: Cabin): AnyObject[] {
 }
 
 function parseLocalLikeTimestamp(ts: string) {
-  // Seats.aero documents these timestamp strings as airport-local times even
-  // though they include a Z suffix. Comparing two timestamps at the same hub
-  // remains valid because both are expressed in the same hub-local clock.
+  // Seats.aero documents these strings as airport-local times even though they
+  // carry a Z suffix. For connection checks both timestamps are at the same hub,
+  // so comparing them is safe.
   return Date.parse(ts);
 }
 
@@ -135,14 +153,17 @@ function connectionMinutes(first: AnyObject, second: AnyObject) {
   return Math.round((b - a) / 60000);
 }
 
-function newestVerificationStatus(updatedAt: string | null) {
+function verificationStatus(updatedAt: string | null) {
   if (!updatedAt) return { ageHours: null, status: "UNKNOWN" as const };
   const t = Date.parse(updatedAt);
   if (!Number.isFinite(t)) return { ageHours: null, status: "UNKNOWN" as const };
   const ageHours = Math.max(0, (Date.now() - t) / 3600000);
   return {
     ageHours: Number(ageHours.toFixed(1)),
-    status: ageHours <= 3 ? ("CACHED_RECENT" as const) : ("STALE_REFRESH_RECOMMENDED" as const),
+    status:
+      ageHours <= 3
+        ? ("CACHED_RECENT" as const)
+        : ("STALE_REFRESH_RECOMMENDED" as const),
   };
 }
 
@@ -150,7 +171,7 @@ function oldestUpdatedAt(...items: AnyObject[]) {
   const times = items
     .map((x) => String(x?.UpdatedAt ?? ""))
     .filter(Boolean)
-    .map((x) => ({ raw: x, ms: Date.parse(x) }))
+    .map((raw) => ({ raw, ms: Date.parse(raw) }))
     .filter((x) => Number.isFinite(x.ms))
     .sort((a, b) => a.ms - b.ms);
   return times[0]?.raw ?? null;
@@ -160,14 +181,12 @@ function tripTaxes(source: string, trips: AnyObject[]) {
   if (TAXES_UNAVAILABLE.has(source)) {
     return { known: false, amount: null, currency: null };
   }
-
   const currencies = new Set(
     trips.map((t) => String(t?.TaxesCurrency ?? "")).filter(Boolean)
   );
   if (currencies.size !== 1) {
     return { known: false, amount: null, currency: null };
   }
-
   const cents = trips.reduce((sum, t) => sum + Number(t?.TotalTaxes ?? 0), 0);
   return {
     known: true,
@@ -195,7 +214,8 @@ function flightSummary(t: AnyObject) {
     departsAt: String(t?.DepartsAt ?? ""),
     arrivesAt: String(t?.ArrivesAt ?? ""),
     miles: Number(t?.MileageCost ?? 0),
-    remainingSeats: Number(t?.RemainingSeats ?? 0) > 0 ? Number(t.RemainingSeats) : null,
+    remainingSeats:
+      Number(t?.RemainingSeats ?? 0) > 0 ? Number(t.RemainingSeats) : null,
     aircraft: Array.isArray(t?.Aircraft) ? t.Aircraft.map(String) : [],
   };
 }
@@ -205,28 +225,37 @@ async function directCandidates(
   availability: AnyObject[],
   origin: string,
   destination: string,
+  requestedDate: string,
   cabin: Cabin,
   maxPrograms = 5
 ): Promise<RouteCandidate[]> {
   const bySource = bestBySource(
-    availability.filter((a) => routeIs(a, origin, destination)),
+    availability.filter(
+      (a) =>
+        routeIs(a, origin, destination) &&
+        String(a.Date).slice(0, 10) === requestedDate
+    ),
     cabin
   );
 
   const pairs = Array.from(bySource.entries())
-    .sort((a, b) => availabilityMiles(a[1], cabin) - availabilityMiles(b[1], cabin))
+    .sort(
+      (a, b) =>
+        availabilityMiles(a[1], cabin) - availabilityMiles(b[1], cabin)
+    )
     .slice(0, maxPrograms);
 
   const output: RouteCandidate[] = [];
-
   for (const [source, a] of pairs) {
     const details = await getAwardTrips(String(a.ID));
-    const trips = tripList(details, cabin)
-      .sort((x, y) => Number(x.MileageCost) - Number(y.MileageCost));
+    const trips = tripList(details, cabin).sort(
+      (x, y) => Number(x.MileageCost) - Number(y.MileageCost)
+    );
 
     for (const trip of trips.slice(0, 3)) {
+      if (String(trip.DepartsAt).slice(0, 10) !== requestedDate) continue;
       const updatedAt = oldestUpdatedAt(a, trip);
-      const freshness = newestVerificationStatus(updatedAt);
+      const freshness = verificationStatus(updatedAt);
       output.push({
         direction,
         program: PROGRAM_NAMES[source] ?? source,
@@ -248,7 +277,6 @@ async function directCandidates(
       });
     }
   }
-
   return output;
 }
 
@@ -258,72 +286,129 @@ async function hubCandidates(
   origin: string,
   destination: string,
   hub: string,
+  requestedDate: string,
   cabin: Cabin,
   minLayoverMinutes: number,
   maxLayoverMinutes: number,
   maxPrograms = 4
 ): Promise<RouteCandidate[]> {
-  const firstBySource = bestBySource(
-    availability.filter((a) => routeIs(a, origin, hub)),
+  const firstGrouped = groupBySource(
+    availability.filter(
+      (a) =>
+        routeIs(a, origin, hub) &&
+        String(a.Date).slice(0, 10) === requestedDate
+    ),
     cabin
   );
-  const secondBySource = bestBySource(
+
+  const secondGrouped = groupBySource(
     availability.filter((a) => routeIs(a, hub, destination)),
     cabin
   );
 
-  const common = Array.from(firstBySource.keys())
-    .filter((source) => secondBySource.has(source))
+  const common = Array.from(firstGrouped.keys())
+    .filter((source) => secondGrouped.has(source))
     .map((source) => {
-      const a = firstBySource.get(source)!;
-      const b = secondBySource.get(source)!;
-      return { source, a, b, miles: availabilityMiles(a, cabin) + availabilityMiles(b, cabin) };
+      const first = firstGrouped.get(source) ?? [];
+      const second = secondGrouped.get(source) ?? [];
+      const floorMiles =
+        Math.min(...first.map((a) => availabilityMiles(a, cabin))) +
+        Math.min(...second.map((a) => availabilityMiles(a, cabin)));
+      return { source, first, second, floorMiles };
     })
-    .sort((x, y) => x.miles - y.miles)
+    .sort((a, b) => a.floorMiles - b.floorMiles)
     .slice(0, maxPrograms);
 
   const output: RouteCandidate[] = [];
 
-  for (const pair of common) {
-    const [firstDetails, secondDetails] = await Promise.all([
-      getAwardTrips(String(pair.a.ID)),
-      getAwardTrips(String(pair.b.ID)),
-    ]);
+  for (const group of common) {
+    const firstAvailability = [...group.first]
+      .sort((a, b) => availabilityMiles(a, cabin) - availabilityMiles(b, cabin))
+      .slice(0, 2);
 
-    const firstTrips = tripList(firstDetails, cabin);
-    const secondTrips = tripList(secondDetails, cabin);
-    const valid: Array<{ first: AnyObject; second: AnyObject; layover: number; miles: number }> = [];
+    // Keep multiple onward dates. Picking only the cheapest summary object can
+    // select a flight that departs before the inbound segment arrives.
+    const secondAvailability = [...group.second]
+      .sort(
+        (a, b) =>
+          String(a.Date).localeCompare(String(b.Date)) ||
+          availabilityMiles(a, cabin) - availabilityMiles(b, cabin)
+      )
+      .slice(0, 4);
 
-    for (const first of firstTrips) {
-      for (const second of secondTrips) {
-        if (String(first.DestinationAirport) !== hub || String(second.OriginAirport) !== hub) continue;
-        const layover = connectionMinutes(first, second);
-        if (layover === null || layover < minLayoverMinutes || layover > maxLayoverMinutes) continue;
-        valid.push({
-          first,
-          second,
-          layover,
-          miles: Number(first.MileageCost) + Number(second.MileageCost),
-        });
+    const detailCache = new Map<string, AnyObject[]>();
+    const loadTrips = async (a: AnyObject) => {
+      const id = String(a.ID);
+      if (!detailCache.has(id)) {
+        detailCache.set(id, tripList(await getAwardTrips(id), cabin));
+      }
+      return detailCache.get(id) ?? [];
+    };
+
+    const valid: Array<{
+      first: AnyObject;
+      second: AnyObject;
+      firstAvailability: AnyObject;
+      secondAvailability: AnyObject;
+      layover: number;
+      miles: number;
+    }> = [];
+
+    for (const firstA of firstAvailability) {
+      const firstTrips = await loadTrips(firstA);
+      for (const secondA of secondAvailability) {
+        const secondTrips = await loadTrips(secondA);
+
+        for (const first of firstTrips) {
+          if (String(first.DepartsAt).slice(0, 10) !== requestedDate) continue;
+          for (const second of secondTrips) {
+            if (
+              String(first.DestinationAirport) !== hub ||
+              String(second.OriginAirport) !== hub
+            ) continue;
+
+            const layover = connectionMinutes(first, second);
+            if (
+              layover === null ||
+              layover < minLayoverMinutes ||
+              layover > maxLayoverMinutes
+            ) continue;
+
+            valid.push({
+              first,
+              second,
+              firstAvailability: firstA,
+              secondAvailability: secondA,
+              layover,
+              miles:
+                Number(first.MileageCost) + Number(second.MileageCost),
+            });
+          }
+        }
       }
     }
 
-    valid.sort((x, y) => x.miles - y.miles || x.layover - y.layover);
+    valid.sort((a, b) => a.miles - b.miles || a.layover - b.layover);
 
     for (const v of valid.slice(0, 3)) {
-      const updatedAt = oldestUpdatedAt(pair.a, pair.b, v.first, v.second);
-      const freshness = newestVerificationStatus(updatedAt);
+      const updatedAt = oldestUpdatedAt(
+        v.firstAvailability,
+        v.secondAvailability,
+        v.first,
+        v.second
+      );
+      const freshness = verificationStatus(updatedAt);
       output.push({
         direction,
-        program: PROGRAM_NAMES[pair.source] ?? pair.source,
-        source: pair.source,
+        program: PROGRAM_NAMES[group.source] ?? group.source,
+        source: group.source,
         routeType: "constructed_one_stop",
         origin,
         destination,
         hub,
         miles: v.miles,
-        taxes: tripTaxes(pair.source, [v.first, v.second]),
-        seats: seatsFor(pair.source, [v.first, v.second]),
+        taxes: tripTaxes(group.source, [v.first, v.second]),
+        seats: seatsFor(group.source, [v.first, v.second]),
         flights: [flightSummary(v.first), flightSummary(v.second)],
         layoverMinutes: v.layover,
         cachedUpdatedAt: updatedAt,
@@ -348,7 +433,17 @@ async function searchDirection(options: {
   minLayoverMinutes: number;
   maxLayoverMinutes: number;
 }) {
-  const { direction, origin, destination, date, hubs, cabin, minLayoverMinutes, maxLayoverMinutes } = options;
+  const {
+    direction,
+    origin,
+    destination,
+    date,
+    hubs,
+    cabin,
+    minLayoverMinutes,
+    maxLayoverMinutes,
+  } = options;
+
   const origins = Array.from(new Set([origin, ...hubs]));
   const destinations = Array.from(new Set([destination, ...hubs]));
 
@@ -370,26 +465,31 @@ async function searchDirection(options: {
     availability,
     origin,
     destination,
+    date,
     cabin
   );
 
   const viaHub: RouteCandidate[] = [];
   for (const hub of hubs) {
-    const found = await hubCandidates(
-      direction,
-      availability,
-      origin,
-      destination,
-      hub,
-      cabin,
-      minLayoverMinutes,
-      maxLayoverMinutes
+    viaHub.push(
+      ...(await hubCandidates(
+        direction,
+        availability,
+        origin,
+        destination,
+        hub,
+        date,
+        cabin,
+        minLayoverMinutes,
+        maxLayoverMinutes
+      ))
     );
-    viaHub.push(...found);
   }
 
   const candidates = [...direct, ...viaHub].sort(
-    (a, b) => a.miles - b.miles || (a.layoverMinutes ?? 0) - (b.layoverMinutes ?? 0)
+    (a, b) =>
+      a.miles - b.miles ||
+      (a.layoverMinutes ?? 0) - (b.layoverMinutes ?? 0)
   );
 
   return {
@@ -452,7 +552,12 @@ export async function searchRoundTripAwardRoutes(options: {
             out.taxes.currency === back.taxes.currency
               ? {
                   known: true,
-                  amount: Number(((out.taxes.amount ?? 0) + (back.taxes.amount ?? 0)).toFixed(2)),
+                  amount: Number(
+                    (
+                      (out.taxes.amount ?? 0) +
+                      (back.taxes.amount ?? 0)
+                    ).toFixed(2)
+                  ),
                   currency: out.taxes.currency,
                 }
               : { known: false, amount: null, currency: null },
@@ -472,7 +577,9 @@ export async function searchRoundTripAwardRoutes(options: {
       }
     }
 
-    roundTripPairs.sort((a, b) => Number(a.miles) - Number(b.miles));
+    roundTripPairs.sort(
+      (a, b) => Number(a.miles) - Number(b.miles)
+    );
   }
 
   return {
@@ -480,10 +587,7 @@ export async function searchRoundTripAwardRoutes(options: {
     searchType: "cached",
     cabin: options.cabin,
     hubs: options.hubs,
-    connectionRules: {
-      minLayoverMinutes,
-      maxLayoverMinutes,
-    },
+    connectionRules: { minLayoverMinutes, maxLayoverMinutes },
     outbound,
     return: inbound,
     roundTripPairs: roundTripPairs.slice(0, 20),
