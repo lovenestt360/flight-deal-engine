@@ -13,6 +13,27 @@ export type AcquisitionPromotion = {
 
 export const CURRENT_ACQUISITION_PROMOTIONS: AcquisitionPromotion[] = [
   {
+    id: "finnair-buy-avios-up-to-50-sep-oct-2026",
+    program: "finnair",
+    method: "buy_avios_bonus",
+    activeAsOf: "2026-09-21",
+    endsAt: "2026-10-05",
+    headline: "Finnair Plus offers up to 50% bonus Avios on eligible Buy Avios transactions.",
+    eligibility: [
+      "Member must have joined Finnair Plus before 18 September 2026.",
+      "Member must have at least 50 Avios in the Finnair Plus account.",
+      "Transaction must complete between 21 September and 5 October 2026.",
+      "Exact bonus rate and purchase price are shown only after login.",
+    ],
+    exactPriceKnown: false,
+    notes: [
+      "Bonus Avios from this campaign do not count toward the 200,000 annual buy/receive limit.",
+      "A new zero-mile member joining now is not eligible for this promotion.",
+      "Purchased Avios normally post within 1–3 days.",
+    ],
+    sourceUrl: "https://www.finnair.com/en/finnair-plus/buy--transfer-or-exchange-avios",
+  },
+  {
     id: "ba-balance-boost-500-sep-2026",
     program: "british_airways",
     method: "balance_boost",
