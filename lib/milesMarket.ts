@@ -185,6 +185,11 @@ export function buildMilesAcquisitionMarket(input: MilesMarketInput) {
         ? Number((input.cashBaselineUSD - allInKnownUSD).toFixed(2))
         : null;
 
+    const pathWaitDays = Number(candidate.path?.maximumKnownWaitDays ?? 0);
+    const pathRequirements = Array.isArray(candidate.path?.requirements)
+      ? candidate.path.requirements
+      : [];
+
     const finalEligibility: Eligibility = limitExceeded
       ? {
           status: "LIMIT_EXCEEDED",
@@ -192,7 +197,20 @@ export function buildMilesAcquisitionMarket(input: MilesMarketInput) {
             `Need ${candidate.sourceUnitsNeeded.toLocaleString()} source units, above the configured annual purchase cap of ${candidate.maxPurchasablePerYear?.toLocaleString()}.`,
           ],
         }
-      : eligibility;
+      : accountMode === "new" &&
+          pathWaitDays > 0 &&
+          eligibility.status === "LOGIN_REQUIRED"
+        ? {
+            status: "WAIT_REQUIRED",
+            waitDays: pathWaitDays,
+            requirements: [...eligibility.requirements, ...pathRequirements],
+          }
+        : {
+            ...eligibility,
+            requirements: Array.from(
+              new Set([...eligibility.requirements, ...pathRequirements])
+            ),
+          };
 
     return {
       sourceProgram: candidate.sourceProgram,
