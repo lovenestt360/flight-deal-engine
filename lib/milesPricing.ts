@@ -105,6 +105,23 @@ export function quoteMilesPurchase(program: string, miles: number): AcquisitionQ
     };
   }
 
+  if (source === "emirates" || source === "skywards") {
+    const roundedMiles = Math.ceil(miles / 1000) * 1000;
+    return {
+      program: "Emirates Skywards",
+      currency: "USD",
+      milesRequested: miles,
+      purchasable: roundedMiles <= 100000,
+      requiresExistingBalance: true,
+      minimumExistingBalance: 1,
+      purchaseCost: Number(((roundedMiles / 1000) * 30).toFixed(2)),
+      purchasePlan: [{ miles: roundedMiles, price: Number(((roundedMiles / 1000) * 30).toFixed(2)) }],
+      note: "Blue/Silver members may buy up to 100,000 Skywards Miles per year at USD 30 per 1,000. The account must have at least one Emirates flight or partner earning activity before buying miles.",
+      verifiedAt: "2026-09-23",
+      sourceUrl: "https://www.emirates.com/us/english/skywards/do-more-with-your-miles/",
+    };
+  }
+
   if (source === "qatar" || source === "qatar privilege club") {
     return {
       program: "Qatar Airways Privilege Club",
