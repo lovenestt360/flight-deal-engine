@@ -218,19 +218,23 @@ export function quoteMilesPurchase(program: string, miles: number): AcquisitionQ
   }
 
   if (source === "marriott_bonvoy" || source === "marriott") {
+    const roundedPoints = Math.ceil(miles / 1000) * 1000;
+    const purchaseCost = Number(((roundedPoints / 1000) * 12.5).toFixed(2));
     return {
       program: "Marriott Bonvoy",
       currency: "USD",
       milesRequested: miles,
-      purchasable: miles <= 100000,
+      purchasable: roundedPoints <= 150000,
       requiresExistingBalance: false,
       minimumExistingBalance: 0,
-      purchaseCost: null,
-      maxPurchasablePerYear: 100000,
-      priceStatus: "LOGIN_REQUIRED",
-      note: "Marriott permits buying up to 100,000 Bonvoy points per calendar year. Exact purchase price/promotions are shown in the points purchase flow. Airline conversions are a separate step.",
+      purchaseCost,
+      purchasePlan: [{ miles: roundedPoints, price: purchaseCost }],
+      maxPurchasablePerYear: 150000,
+      postingTime: "within 72 hours",
+      priceStatus: "VERIFIED_PUBLIC",
+      note: "Marriott's published standard rate is USD 12.50 per 1,000 Bonvoy points through the Buy Points Storefront, with a combined Buy/Gift cap of 150,000 points per calendar year. New members must wait 30 days after enrolment before buying. Promotional pricing can differ.",
       verifiedAt: "2026-09-23",
-      sourceUrl: "https://www.marriott.com/loyalty/redeem/buyPoints1.mi",
+      sourceUrl: "https://www.marriott.com/en-gb/loyalty/terms/default.mi",
     };
   }
 
