@@ -8,8 +8,12 @@ type Candidate = {
   sourceUnitsNeeded: number;
   acquisitionCurrency: string;
   acquisitionCost: number | null;
+  acquisitionPurchasable: boolean;
+  maxPurchasablePerYear: number | null;
+  priceStatus: string | null;
   hops: number;
   path: ReturnType<typeof findTransferPaths>[number] | null;
+  status: "PRICE_KNOWN" | "LOGIN_REQUIRED" | "NOT_PURCHASABLE_FROM_ZERO";
   note: string;
 };
 
@@ -19,10 +23,17 @@ const BUYABLE_SOURCES = [
   "finnair",
   "iberia",
   "aerclub",
+  "marriott_bonvoy",
   "velocity",
   "american",
   "emirates",
 ];
+
+function candidateStatus(cost: number | null, purchasable: boolean) {
+  if (!purchasable) return "NOT_PURCHASABLE_FROM_ZERO" as const;
+  if (cost === null) return "LOGIN_REQUIRED" as const;
+  return "PRICE_KNOWN" as const;
+}
 
 export function cheapestAcquisitionRoutes(
   targetProgram: string,
@@ -38,15 +49,18 @@ export function cheapestAcquisitionRoutes(
     sourceUnitsNeeded: targetMilesNeeded,
     acquisitionCurrency: direct.currency,
     acquisitionCost: direct.purchaseCost,
+    acquisitionPurchasable: direct.purchasable,
+    maxPurchasablePerYear: direct.maxPurchasablePerYear ?? null,
+    priceStatus: direct.priceStatus ?? null,
     hops: 0,
     path: null,
+    status: candidateStatus(direct.purchaseCost, direct.purchasable),
     note: direct.note,
   });
 
   for (const source of BUYABLE_SOURCES) {
     if (source === targetProgram) continue;
-    const paths = findTransferPaths(source, targetProgram, targetMilesNeeded, 3);
-    for (const path of paths.slice(0, 3)) {
+    for (const path of findTransferPaths(source, targetProgram, targetMilesNeeded, 3).slice(0, 4)) {
       const quote = quoteMilesPurchase(source, path.sourceUnitsRequired);
       candidates.push({
         sourceProgram: source,
@@ -55,18 +69,24 @@ export function cheapestAcquisitionRoutes(
         sourceUnitsNeeded: path.sourceUnitsRequired,
         acquisitionCurrency: quote.currency,
         acquisitionCost: quote.purchaseCost,
+        acquisitionPurchasable: quote.purchasable,
+        maxPurchasablePerYear: quote.maxPurchasablePerYear ?? null,
+        priceStatus: quote.priceStatus ?? null,
         hops: path.hops.length,
         path,
+        status: candidateStatus(quote.purchaseCost, quote.purchasable),
         note: quote.note,
       });
     }
   }
 
   return candidates.sort((a, b) => {
-    if (a.acquisitionCost === null && b.acquisitionCost === null) return a.hops - b.hops;
-    if (a.acquisitionCost === null) return 1;
-    if (b.acquisitionCost === null) return -1;
-    if (a.acquisitionCurrency !== b.acquisitionCurrency) return a.hops - b.hops;
-    return a.acquisitionCost - b.acquisitionCost;
+    const statusRank = { PRICE_KNOWN: 0, LOGIN_REQUIRED: 1, NOT_PURCHASABLE_FROM_ZERO: 2 } as const;
+    const sr = statusRank[a.status] - statusRank[b.status];
+    if (sr) return sr;
+    if (a.acquisitionCost !== null && b.acquisitionCost !== null && a.acquisitionCurrency === b.acquisitionCurrency) {
+      return a.acquisitionCost - b.acquisitionCost;
+    }
+    return a.hops - b.hops || a.sourceUnitsNeeded - b.sourceUnitsNeeded;
   });
 }
